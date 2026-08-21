@@ -6,7 +6,6 @@ import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
-import { useConfig } from '@/contexts/ConfigContext';
 
 
 interface TranscriptButtonGroupProps {
@@ -27,8 +26,12 @@ export function TranscriptButtonGroup({
   meetingFolderPath,
   onRefetchTranscripts,
 }: TranscriptButtonGroupProps) {
-  const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+
+  // Always available (not beta-gated) as long as we have somewhere to read audio from —
+  // lets you regenerate a transcript with a different model/language to compare quality,
+  // whether or not one already exists.
+  const isFirstTranscription = transcriptCount === 0;
 
   const handleRetranscribeComplete = useCallback(async () => {
     // Refetch transcripts to show the updated data
@@ -68,30 +71,31 @@ export function TranscriptButtonGroup({
           <span className="hidden lg:inline">Recording</span>
         </Button>
 
-        {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
+        {meetingId && meetingFolderPath && (
           <Button
             size="sm"
             variant="outline"
             className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
             onClick={() => {
-              Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
+              Analytics.trackButtonClick(isFirstTranscription ? 'transcribe_now' : 'enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
-            title="Retranscribe to enhance your recorded audio"
+            title={isFirstTranscription ? 'Transcribe this recording' : 'Regenerate the transcript with a different model or language — useful for comparing quality'}
           >
             <RefreshCw className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Enhance</span>
+            <span className="hidden lg:inline">{isFirstTranscription ? 'Transcribe Now' : 'Regenerate'}</span>
           </Button>
         )}
       </ButtonGroup>
 
-      {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
+      {meetingId && meetingFolderPath && (
         <RetranscribeDialog
           open={showRetranscribeDialog}
           onOpenChange={setShowRetranscribeDialog}
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+          isFirstTranscription={isFirstTranscription}
         />
       )}
     </div>

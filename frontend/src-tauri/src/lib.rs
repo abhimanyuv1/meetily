@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod calendar;
 pub mod config;
 pub mod console_utils;
 pub mod database;
@@ -499,6 +500,9 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            // Start the Google Calendar sync loop (no-op ticks until an account is connected)
+            calendar::poller::start(_app.handle().clone());
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {
@@ -512,14 +516,29 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+            if window.label() != "main" {
+                return;
+            }
+
+            // Both closing (X button) and minimizing hide to the tray instead of actually
+            // closing/minimizing — the tray icon (and its "Open Main Window" menu item) is
+            // the only way back. Tauri has no direct WindowEvent::Minimized on this version,
+            // so minimize is detected via the Resized event + is_minimized() check, which is
+            // the standard workaround for this.
+            let should_hide = match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    if let Err(e) = window.hide() {
-                        log::error!("Failed to hide main window on close request: {}", e);
-                    } else {
-                        log::info!("Main window hidden to tray on close request");
-                    }
+                    true
+                }
+                tauri::WindowEvent::Resized(_) => window.is_minimized().unwrap_or(false),
+                _ => false,
+            };
+
+            if should_hide {
+                if let Err(e) = window.hide() {
+                    log::error!("Failed to hide main window to tray: {}", e);
+                } else {
+                    log::info!("Main window hidden to tray");
                 }
             }
         })
@@ -748,6 +767,14 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            // Google Calendar integration commands
+            calendar::commands::calendar_connect,
+            calendar::commands::calendar_disconnect,
+            calendar::commands::calendar_get_status,
+            calendar::commands::calendar_get_upcoming_events,
+            calendar::commands::calendar_get_auto_start_settings,
+            calendar::commands::calendar_update_auto_start_settings,
+            calendar::commands::calendar_confirm_auto_start,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

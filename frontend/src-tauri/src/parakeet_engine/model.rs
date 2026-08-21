@@ -1,6 +1,8 @@
 use ndarray::{Array, Array1, Array2, Array3, ArrayD, ArrayViewD, IxDyn};
 use once_cell::sync::Lazy;
 use ort::execution_providers::CPUExecutionProvider;
+#[cfg(feature = "cuda")]
+use ort::execution_providers::CUDAExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -59,10 +61,19 @@ impl Drop for ParakeetModel {
 }
 
 impl ParakeetModel {
+    /// Thread budget for ONNX inference sessions. Left unset, onnxruntime defaults to using
+    /// every available CPU core, which starves the real-time audio capture/mixing threads
+    /// during live transcription. Reserve 2 cores for audio + UI.
+    fn thread_budget() -> usize {
+        let cores = crate::audio::HardwareProfile::detect().cpu_cores as usize;
+        cores.saturating_sub(2).max(2)
+    }
+
     pub fn new<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<Self, ParakeetError> {
-        let encoder = Self::init_session(&model_dir, "encoder-model", None, quantized)?;
-        let decoder_joint = Self::init_session(&model_dir, "decoder_joint-model", None, quantized)?;
-        let preprocessor = Self::init_session(&model_dir, "nemo128", None, false)?;
+        let intra_threads = Some(Self::thread_budget());
+        let encoder = Self::init_session(&model_dir, "encoder-model", intra_threads, quantized)?;
+        let decoder_joint = Self::init_session(&model_dir, "decoder_joint-model", intra_threads, quantized)?;
+        let preprocessor = Self::init_session(&model_dir, "nemo128", intra_threads, false)?;
 
         let (vocab, blank_idx) = Self::load_vocab(&model_dir)?;
         let vocab_size = vocab.len();
@@ -89,7 +100,14 @@ impl ParakeetModel {
         intra_threads: Option<usize>,
         try_quantized: bool,
     ) -> Result<Session, ParakeetError> {
-        let providers = vec![CPUExecutionProvider::default().build()];
+        // Try CUDA first; ort silently falls back to the next provider in the
+        // list (CPU) if CUDA/cuDNN aren't available or fail to initialize, so
+        // this is safe on machines without an NVIDIA GPU.
+        #[allow(unused_mut)]
+        let mut providers = Vec::new();
+        #[cfg(feature = "cuda")]
+        providers.push(CUDAExecutionProvider::default().build());
+        providers.push(CPUExecutionProvider::default().build());
 
         // Try quantized version first if requested, fallback to regular version
         let model_filename = if try_quantized {
