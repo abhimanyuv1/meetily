@@ -164,4 +164,9 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "sarvamApiKey")]
     #[serde(rename = "sarvamApiKey")]
     pub sarvam_api_key: Option<String>,
+    /// Optional override of the OpenAI API root, enabling any OpenAI-compatible
+    /// STT service. Empty/None means the official endpoint.
+    #[sqlx(rename = "openaiBaseUrl")]
+    #[serde(rename = "openaiBaseUrl")]
+    pub openai_base_url: Option<String>,
 }
