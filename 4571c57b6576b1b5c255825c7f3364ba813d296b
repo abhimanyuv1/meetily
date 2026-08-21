@@ -1,0 +1,1 @@
+Correction: the commit message says '23 new tests'; the accurate count of tests added to openai_provider.rs in this commit is 20. The figure was overstated. Current totals across the OpenAI work: 22 in openai_provider.rs (2 of them #[ignore]d network tests), 3 in engine.rs, 4 in setting.rs, 3 in wav.rs.
