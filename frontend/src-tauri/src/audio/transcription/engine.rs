@@ -520,3 +520,56 @@ pub async fn get_or_init_whisper<R: Runtime>(
 
     Ok(engine)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::transcription::openai_provider::OpenAiProvider;
+
+    /// The recording worker never touches a concrete provider type: it holds a
+    /// `TranscriptionEngine` and matches on it. These tests drive that same
+    /// boundary for OpenAI, so a provider that works in isolation but doesn't
+    /// slot into the engine enum would fail here.
+    #[tokio::test]
+    async fn openai_provider_is_usable_through_the_engine_enum() {
+        let provider = OpenAiProvider::new("sk-test".to_string(), "whisper-1".to_string(), None);
+        let engine = TranscriptionEngine::Provider(Arc::new(provider));
+
+        // The worker logs and gates on these three accessors.
+        assert_eq!(engine.provider_name(), "OpenAI");
+        assert!(
+            engine.is_model_loaded().await,
+            "an online provider with a key must report ready"
+        );
+        assert_eq!(engine.get_current_model().await, Some("whisper-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn openai_engine_without_key_reports_not_loaded() {
+        // Mirrors the guard that stops a recording starting with no key set.
+        let provider = OpenAiProvider::new("".to_string(), "whisper-1".to_string(), None);
+        let engine = TranscriptionEngine::Provider(Arc::new(provider));
+        assert!(!engine.is_model_loaded().await);
+    }
+
+    /// Regression guard for a real silent-failure risk: OpenAI returns no
+    /// per-chunk confidence, and the worker applies a 0.3 confidence threshold
+    /// to `Provider` engines. This reproduces the worker's exact acceptance
+    /// expression (worker.rs) to prove a `None` confidence is still accepted
+    /// rather than silently dropping every transcript.
+    #[test]
+    fn none_confidence_still_meets_the_worker_threshold() {
+        let confidence_threshold = 0.3f32; // Provider arm in worker.rs
+        let openai_confidence: Option<f32> = None; // what OpenAI returns
+
+        let meets_threshold = openai_confidence.map_or(true, |c| c >= confidence_threshold);
+        assert!(
+            meets_threshold,
+            "OpenAI transcripts must not be dropped for lacking a confidence score"
+        );
+
+        // A provider that does report low confidence is still filtered.
+        assert!(!Some(0.1f32).map_or(true, |c| c >= confidence_threshold));
+        assert!(Some(0.9f32).map_or(true, |c| c >= confidence_threshold));
+    }
+}

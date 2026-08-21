@@ -697,4 +697,60 @@ mod tests {
             other => panic!("expected EngineFailed, got {:?}", other),
         }
     }
+    /// Live wire-compatibility check against the real api.openai.com.
+    ///
+    /// Without a paid key we cannot assert on transcript text, but we CAN prove
+    /// the request we build is well-formed enough for OpenAI to parse and
+    /// authenticate: a malformed multipart body or wrong route would yield 400
+    /// or 404, whereas a correctly-shaped request with a bad key yields 401.
+    /// This is the closest we get to the real acceptance path without billing.
+    ///
+    /// Ignored by default so CI/offline runs are unaffected; run with
+    /// `cargo test -- --ignored openai_live`.
+    #[tokio::test]
+    #[ignore]
+    async fn openai_live_endpoint_rejects_bad_key_not_bad_request() {
+        let provider =
+            OpenAiProvider::new("sk-invalid-key-for-testing".to_string(), "whisper-1".to_string(), None);
+        let audio = vec![0.05f32; 16_000]; // 1 second of quiet audio
+        let err = provider
+            .transcribe(audio, Some("en".to_string()))
+            .await
+            .expect_err("an invalid key must fail");
+
+        let msg = err.to_string();
+        println!("LIVE OPENAI RESPONSE: {}", msg);
+        assert!(
+            msg.contains("API key"),
+            "expected an auth rejection (proving the request shape was accepted \
+             and it failed only on credentials), got: {}",
+            msg
+        );
+    }
+
+    /// End-to-end success path against a real OpenAI-compatible HTTP server
+    /// running out-of-process (see /tmp/mock_oai_server.py). Unlike the in-test
+    /// mock, that server genuinely parses the multipart body and decodes the
+    /// WAV with a standard library, so a malformed container fails loudly.
+    ///
+    /// Ignored by default (needs the external server); run with
+    /// `cargo test -- --ignored openai_e2e`.
+    #[tokio::test]
+    #[ignore]
+    async fn openai_e2e_against_external_compatible_server() {
+        let provider = OpenAiProvider::new(
+            "sk-local".to_string(),
+            "Systran/faster-whisper-large-v3".to_string(),
+            Some("http://127.0.0.1:8731/v1".to_string()),
+        );
+        let audio = vec![0.25f32; 16_000]; // 1s
+        let result = provider
+            .transcribe(audio, Some("en".to_string()))
+            .await
+            .expect("self-hosted OpenAI-compatible transcription should succeed");
+        println!("E2E TRANSCRIPT: {:?}", result.text);
+        assert_eq!(result.text, "the quick brown fox");
+        assert!(!result.is_partial);
+    }
+
 }
