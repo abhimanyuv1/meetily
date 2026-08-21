@@ -683,6 +683,42 @@ pub async fn api_save_transcript_config<R: Runtime>(
     )
 }
 
+/// Returns the user's OpenAI base-URL override, or an empty string when unset
+/// (meaning the official OpenAI endpoint). Lets users target any
+/// OpenAI-compatible speech-to-text service.
+#[tauri::command]
+pub async fn api_get_openai_base_url<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    _auth_token: Option<String>,
+) -> Result<String, String> {
+    match SettingsRepository::get_openai_base_url(state.db_manager.pool()).await {
+        Ok(url) => Ok(url.unwrap_or_default()),
+        Err(e) => {
+            log_error!("Failed to get OpenAI base URL: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Saves the OpenAI base-URL override. An empty value clears it.
+#[tauri::command]
+pub async fn api_save_openai_base_url<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    base_url: String,
+    _auth_token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    log_info!("api_save_openai_base_url called (native)");
+    match SettingsRepository::save_openai_base_url(state.db_manager.pool(), &base_url).await {
+        Ok(()) => Ok(serde_json::json!({ "status": "success" })),
+        Err(e) => {
+            log_error!("Failed to save OpenAI base URL: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn api_get_transcript_api_key<R: Runtime>(
     _app: AppHandle<R>,

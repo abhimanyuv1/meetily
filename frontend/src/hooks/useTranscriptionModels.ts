@@ -8,7 +8,7 @@ export interface RawModelInfo {
 }
 
 export interface ModelOption {
-  provider: 'whisper' | 'parakeet' | 'sarvam';
+  provider: 'whisper' | 'parakeet' | 'sarvam' | 'openai';
   name: string;
   displayName: string;
   size_mb: number;
@@ -94,6 +94,23 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
       });
     }
 
+    // OpenAI (online). Like Sarvam there is no local model list to query; offer
+    // the configured OpenAI model (or the default) so cloud transcription is
+    // selectable in the import/retranscribe dialogs, mirroring live recording.
+    {
+      const configuredProvider = transcriptModelConfig?.provider || '';
+      const openaiModel =
+        configuredProvider === 'openai' && transcriptModelConfig?.model
+          ? transcriptModelConfig.model
+          : 'whisper-1';
+      allModels.push({
+        provider: 'openai' as const,
+        name: openaiModel,
+        displayName: `🌐 OpenAI: ${openaiModel}`,
+        size_mb: 0,
+      });
+    }
+
     setAvailableModels(allModels);
 
     // Set default model based on user's saved configuration
@@ -106,7 +123,8 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
       (m) =>
         (configuredProvider === 'localWhisper' && m.provider === 'whisper' && m.name === configuredModel) ||
         (configuredProvider === 'parakeet' && m.provider === 'parakeet' && m.name === configuredModel) ||
-        (configuredProvider === 'sarvam' && m.provider === 'sarvam')
+        (configuredProvider === 'sarvam' && m.provider === 'sarvam') ||
+        (configuredProvider === 'openai' && m.provider === 'openai')
     );
 
     // Only set default model if user hasn't manually selected one

@@ -206,6 +206,44 @@ impl SettingsRepository {
         Ok(())
     }
 
+    /// Reads the optional OpenAI base-URL override. Empty string means "unset",
+    /// i.e. use the official OpenAI endpoint. Exposed so users can point the
+    /// OpenAI provider at any OpenAI-compatible STT service.
+    pub async fn get_openai_base_url(
+        pool: &SqlitePool,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
+        let url: Option<Option<String>> =
+            sqlx::query_scalar("SELECT openaiBaseUrl FROM transcript_settings WHERE id = '1' LIMIT 1")
+                .fetch_optional(pool)
+                .await?;
+        Ok(url
+            .flatten()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty()))
+    }
+
+    /// Persists the OpenAI base-URL override. Passing an empty/whitespace value
+    /// clears it, restoring the official OpenAI endpoint.
+    pub async fn save_openai_base_url(
+        pool: &SqlitePool,
+        base_url: &str,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let trimmed = base_url.trim();
+        let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+        sqlx::query(
+            r#"
+            INSERT INTO transcript_settings (id, provider, model, openaiBaseUrl)
+            VALUES ('1', 'openai', '', $1)
+            ON CONFLICT(id) DO UPDATE SET
+                openaiBaseUrl = $1
+            "#,
+        )
+        .bind(value)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_transcript_api_key(
         pool: &SqlitePool,
         provider: &str,

@@ -241,6 +241,43 @@ pub(crate) async fn get_sarvam_config<R: tauri::Runtime>(
     Ok((key, model.unwrap_or_default()))
 }
 
+/// Read the saved OpenAI API key + model + optional base URL from
+/// `transcript_settings` (id='1'). Returns (api_key, model, base_url).
+/// Errors if the key is missing/empty so batch jobs fail fast with a clear
+/// message instead of hitting the API unauthenticated.
+///
+/// `base_url` is `None` when unset, meaning the official OpenAI endpoint; it is
+/// user-configurable so any OpenAI-compatible STT service can be used.
+pub(crate) async fn get_openai_config<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(String, String, Option<String>)> {
+    use tauri::Manager;
+    let app_state = app
+        .try_state::<crate::state::AppState>()
+        .ok_or_else(|| anyhow::anyhow!("App state not available"))?;
+
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT openaiApiKey, model, openaiBaseUrl FROM transcript_settings WHERE id = '1'",
+    )
+    .fetch_optional(app_state.db_manager.pool())
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to query OpenAI config: {}", e))?;
+
+    let (key, model, base_url) = row.unwrap_or((None, None, None));
+    let key = key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI is selected but no API key is set. Paste your OpenAI API key in Transcript settings."
+            )
+        })?;
+    let base_url = base_url
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    Ok((key, model.unwrap_or_default(), base_url))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

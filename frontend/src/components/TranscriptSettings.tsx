@@ -27,6 +27,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
     const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
+    // Optional OpenAI base URL override, enabling any OpenAI-compatible STT
+    // service (Groq, LiteLLM, a local faster-whisper-server, ...). Empty means
+    // the official OpenAI endpoint.
+    const [openaiBaseUrl, setOpenaiBaseUrl] = useState<string>('');
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
     useEffect(() => {
@@ -50,6 +54,24 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             setApiKey(null);
         }
     };
+
+    const fetchOpenaiBaseUrl = async () => {
+        try {
+            const url = await invoke('api_get_openai_base_url') as string;
+            setOpenaiBaseUrl(url || '');
+        } catch (err) {
+            console.error('Error fetching OpenAI base URL:', err);
+            setOpenaiBaseUrl('');
+        }
+    };
+
+    // Load the saved base URL whenever OpenAI is the active provider, including
+    // on first render when it was already selected.
+    useEffect(() => {
+        if (uiProvider === 'openai') {
+            fetchOpenaiBaseUrl();
+        }
+    }, [uiProvider]);
     const modelOptions = {
         localWhisper: [], // Model selection handled by ModelManager component
         parakeet: [], // Model selection handled by ParakeetModelManager component
@@ -57,7 +79,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         deepgram: ['nova-2-phonecall'],
         elevenLabs: ['eleven_multilingual_v2'],
         groq: ['llama-3.3-70b-versatile'],
-        openai: ['gpt-4o'],
+        openai: ['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
     };
     const requiresApiKey = uiProvider === 'sarvam' || uiProvider === 'deepgram' || uiProvider === 'elevenLabs' || uiProvider === 'openai' || uiProvider === 'groq';
 
@@ -83,6 +105,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 model,
                 apiKey: apiKey ?? null,
             });
+            // The base URL is provider-specific and stored separately.
+            if (uiProvider === 'openai') {
+                await invoke('api_save_openai_base_url', { baseUrl: openaiBaseUrl.trim() });
+            }
             // Reflect saved values in shared config so the rest of the app sees them.
             setTranscriptModelConfig({ ...transcriptModelConfig, provider: uiProvider, model, apiKey: apiKey ?? null });
             setSaveStatus('saved');
@@ -152,10 +178,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     <SelectItem value="parakeet">⚡ Parakeet (Recommended - Real-time / Accurate)</SelectItem>
                                     <SelectItem value="localWhisper">🏠 Local Whisper (High Accuracy)</SelectItem>
                                     <SelectItem value="sarvam">☁️ Sarvam AI (Online - Indic languages)</SelectItem>
+                                    <SelectItem value="openai">☁️ OpenAI Whisper (Online - bring your own key)</SelectItem>
                                     {/* <SelectItem value="deepgram">☁️ Deepgram (Backup)</SelectItem>
                                     <SelectItem value="elevenLabs">☁️ ElevenLabs</SelectItem>
-                                    <SelectItem value="groq">☁️ Groq</SelectItem>
-                                    <SelectItem value="openai">☁️ OpenAI</SelectItem> */}
+                                    <SelectItem value="groq">☁️ Groq</SelectItem> */}
                                 </SelectContent>
                             </Select>
 
@@ -266,6 +292,27 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 <p className="mt-2 mx-1 text-xs text-gray-500">
                                     Online transcription via Sarvam AI. Audio is sent to Sarvam's servers. Get a key at platform.sarvam.ai.
                                 </p>
+                            )}
+                            {uiProvider === 'openai' && (
+                                <>
+                                    <div className="mt-4">
+                                        <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                            API Base URL <span className="text-gray-400 font-normal">(optional)</span>
+                                        </Label>
+                                        <Input
+                                            type="text"
+                                            className="mx-1 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                            value={openaiBaseUrl}
+                                            onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                                            placeholder="https://api.openai.com/v1"
+                                        />
+                                    </div>
+                                    <p className="mt-2 mx-1 text-xs text-gray-500">
+                                        Online transcription via OpenAI. Audio is sent to OpenAI's servers. Get a key at platform.openai.com.
+                                        Leave the base URL empty to use OpenAI, or point it at any OpenAI-compatible
+                                        service (Groq, LiteLLM, a self-hosted faster-whisper-server) to use that instead.
+                                    </p>
+                                </>
                             )}
                         </div>
                     )}

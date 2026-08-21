@@ -521,7 +521,21 @@ async fn run_import<R: Runtime>(
     } else {
         None
     };
-    let whisper_engine = if !use_parakeet && !use_sarvam && total_segments > 0 {
+    let use_openai = provider.as_deref() == Some("openai");
+    let openai_provider = if use_openai && total_segments > 0 {
+        let (api_key, settings_model, base_url) = super::common::get_openai_config(&app).await?;
+        // Prefer the model chosen in the dialog dropdown; fall back to the saved
+        // settings model. The provider sanitizes it against OpenAI's valid list.
+        let openai_model = model.clone().unwrap_or(settings_model);
+        Some(crate::audio::transcription::openai_provider::OpenAiProvider::new(
+            api_key,
+            openai_model,
+            base_url,
+        ))
+    } else {
+        None
+    };
+    let whisper_engine = if !use_parakeet && !use_sarvam && !use_openai && total_segments > 0 {
         Some(get_or_init_whisper(&app, model.as_deref()).await?)
     } else {
         None
@@ -599,6 +613,14 @@ async fn run_import<R: Runtime>(
                 .transcribe(segment.samples.clone(), language.clone())
                 .await
                 .map_err(|e| anyhow!("Sarvam transcription failed on segment {}: {}", i, e))?;
+            (result.text, result.confidence.unwrap_or(0.9))
+        } else if use_openai {
+            let provider = openai_provider.as_ref().unwrap();
+            use crate::audio::transcription::TranscriptionProvider;
+            let result = provider
+                .transcribe(segment.samples.clone(), language.clone())
+                .await
+                .map_err(|e| anyhow!("OpenAI transcription failed on segment {}: {}", i, e))?;
             (result.text, result.confidence.unwrap_or(0.9))
         } else if use_parakeet {
             let engine = parakeet_engine.as_ref().unwrap();

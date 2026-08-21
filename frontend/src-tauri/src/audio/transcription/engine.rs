@@ -150,10 +150,25 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 ),
             }
         }
+        "openai" => {
+            info!("🌐 Validating OpenAI online transcription config...");
+            // Online provider: nothing to load locally. Just ensure an API key
+            // is present so we fail fast in the UI instead of mid-recording.
+            match config.api_key {
+                Some(ref key) if !key.trim().is_empty() => {
+                    info!("✅ OpenAI API key present, online transcription ready");
+                    Ok(())
+                }
+                _ => Err(
+                    "OpenAI is selected but no API key is set. Paste your OpenAI API key in Transcript settings."
+                        .to_string(),
+                ),
+            }
+        }
         other => {
             warn!("❌ Unsupported transcription provider for local recording: {}", other);
             Err(format!(
-                "Provider '{}' is not supported for local transcription. Please select 'localWhisper', 'parakeet', or 'sarvam'.",
+                "Provider '{}' is not supported for local transcription. Please select 'localWhisper', 'parakeet', 'sarvam', or 'openai'.",
                 other
             ))
         }
@@ -239,12 +254,49 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
             let provider = super::sarvam_provider::SarvamProvider::new(api_key, config.model.clone());
             Ok(TranscriptionEngine::Provider(Arc::new(provider)))
         }
+        "openai" => {
+            info!("🌐 Initializing OpenAI online transcription engine");
+            let api_key = config
+                .api_key
+                .clone()
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| {
+                    "OpenAI selected but no API key configured. Paste your key in Transcript settings.".to_string()
+                })?;
+            // The base URL lives outside TranscriptConfig (it is provider-specific),
+            // so read it directly; None simply means the official endpoint.
+            let base_url = get_openai_base_url(app).await;
+            let provider = super::openai_provider::OpenAiProvider::new(
+                api_key,
+                config.model.clone(),
+                base_url,
+            );
+            Ok(TranscriptionEngine::Provider(Arc::new(provider)))
+        }
         "localWhisper" | _ => {
             info!("🎤 Initializing Whisper transcription engine");
             let whisper_engine = get_or_init_whisper(app).await?;
             Ok(TranscriptionEngine::Whisper(whisper_engine))
         }
     }
+}
+
+/// Reads the user's optional OpenAI base URL override from settings.
+///
+/// This is deliberately non-fatal: the base URL is an advanced, optional
+/// setting for OpenAI-compatible services, so any failure (missing state,
+/// column, or row) just falls back to the official OpenAI endpoint rather than
+/// blocking a recording from starting.
+async fn get_openai_base_url<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let app_state = app.try_state::<crate::state::AppState>()?;
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT openaiBaseUrl FROM transcript_settings WHERE id = '1'")
+            .fetch_optional(app_state.db_manager.pool())
+            .await
+            .unwrap_or(None);
+    row.flatten()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
 }
 
 /// Get or initialize transcription engine using API configuration
