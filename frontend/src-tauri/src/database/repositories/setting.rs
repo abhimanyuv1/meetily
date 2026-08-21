@@ -386,3 +386,128 @@ impl SettingsRepository {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::manager::DatabaseManager;
+
+    /// Builds a real database the same way the app does: an on-disk SQLite file
+    /// created and migrated by `DatabaseManager::new`, which runs the actual
+    /// `migrations/` directory. This exercises the real migration chain rather
+    /// than a hand-written schema, so a broken/missing migration fails here.
+    async fn real_migrated_db() -> (DatabaseManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("test.sqlite");
+        let db_str = db_path.to_str().unwrap().to_string();
+        let mgr = DatabaseManager::new(&db_str, "/nonexistent-legacy.db")
+            .await
+            .expect("DatabaseManager::new should create and migrate the DB");
+        (mgr, dir)
+    }
+
+    #[tokio::test]
+    async fn openai_base_url_roundtrips_through_real_migrated_db() {
+        let (mgr, _dir) = real_migrated_db().await;
+        let pool = mgr.pool();
+
+        // Unset by default (the column exists thanks to the new migration).
+        let initial = SettingsRepository::get_openai_base_url(pool)
+            .await
+            .expect("get should succeed on a freshly migrated DB");
+        assert_eq!(initial, None, "base URL should start unset");
+
+        // Save a custom endpoint and read it back.
+        SettingsRepository::save_openai_base_url(pool, "http://localhost:8000/v1")
+            .await
+            .expect("save should succeed");
+        assert_eq!(
+            SettingsRepository::get_openai_base_url(pool).await.unwrap(),
+            Some("http://localhost:8000/v1".to_string())
+        );
+
+        // Whitespace is trimmed on the way in.
+        SettingsRepository::save_openai_base_url(pool, "  http://example.com/v1  ")
+            .await
+            .unwrap();
+        assert_eq!(
+            SettingsRepository::get_openai_base_url(pool).await.unwrap(),
+            Some("http://example.com/v1".to_string())
+        );
+
+        // An empty value clears it, restoring the official OpenAI endpoint.
+        SettingsRepository::save_openai_base_url(pool, "   ")
+            .await
+            .unwrap();
+        assert_eq!(
+            SettingsRepository::get_openai_base_url(pool).await.unwrap(),
+            None,
+            "empty value should clear the override"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_transcript_config_preserves_openai_base_url() {
+        // Regression guard: the base URL lives in the same row as provider/model,
+        // so a later config save must not clobber it.
+        let (mgr, _dir) = real_migrated_db().await;
+        let pool = mgr.pool();
+
+        SettingsRepository::save_openai_base_url(pool, "https://api.groq.com/openai/v1")
+            .await
+            .unwrap();
+        SettingsRepository::save_transcript_config(pool, "openai", "whisper-1")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            SettingsRepository::get_openai_base_url(pool).await.unwrap(),
+            Some("https://api.groq.com/openai/v1".to_string()),
+            "base URL must survive a transcript config save"
+        );
+
+        let config = SettingsRepository::get_transcript_config(pool)
+            .await
+            .unwrap()
+            .expect("config should exist");
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.model, "whisper-1");
+    }
+
+    #[tokio::test]
+    async fn openai_api_key_roundtrips_for_transcript_provider() {
+        // The end-user path: settings UI saves provider+model+key, and the
+        // recording engine reads the key back for the 'openai' provider.
+        let (mgr, _dir) = real_migrated_db().await;
+        let pool = mgr.pool();
+
+        SettingsRepository::save_transcript_config(pool, "openai", "whisper-1")
+            .await
+            .unwrap();
+        SettingsRepository::save_transcript_api_key(pool, "openai", "sk-test-123")
+            .await
+            .unwrap();
+
+        let key = SettingsRepository::get_transcript_api_key(pool, "openai")
+            .await
+            .unwrap();
+        assert_eq!(key, Some("sk-test-123".to_string()));
+
+        // Saving the OpenAI key must not disturb the Sarvam key (separate columns).
+        SettingsRepository::save_transcript_api_key(pool, "sarvam", "sarvam-key")
+            .await
+            .unwrap();
+        assert_eq!(
+            SettingsRepository::get_transcript_api_key(pool, "openai")
+                .await
+                .unwrap(),
+            Some("sk-test-123".to_string())
+        );
+        assert_eq!(
+            SettingsRepository::get_transcript_api_key(pool, "sarvam")
+                .await
+                .unwrap(),
+            Some("sarvam-key".to_string())
+        );
+    }
+}
