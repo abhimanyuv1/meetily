@@ -29,6 +29,16 @@ on:
           - rpm
           - all
         default: all
+      backends:
+        description: 'Acceleration backend(s) to build'
+        required: true
+        type: choice
+        options:
+          - cpu
+          - cuda
+          - vulkan
+          - all
+        default: all
       sign-build:
         description: 'Sign the build'
         required: true
@@ -52,11 +62,45 @@ env:
   WHISPER_NO_AVX2: ON
 
 jobs:
+  # Turns the single `backends` choice input into a JSON matrix so the build
+  # job below can fan out into parallel cpu/cuda/vulkan legs. Each leg produces
+  # its own artifact set (compile-time Cargo features, not a runtime switch, so
+  # one binary cannot support multiple backends at once).
+  plan-matrix:
+    name: Plan backend matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      backends: ${{ steps.plan.outputs.backends }}
+    steps:
+      - name: Determine backend matrix
+        id: plan
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.backends || 'all' }}" in
+            all)
+              echo 'backends=["cpu","cuda","vulkan"]' >> "$GITHUB_OUTPUT"
+              ;;
+            cpu)
+              echo 'backends=["cpu"]' >> "$GITHUB_OUTPUT"
+              ;;
+            cuda)
+              echo 'backends=["cuda"]' >> "$GITHUB_OUTPUT"
+              ;;
+            vulkan)
+              echo 'backends=["vulkan"]' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
   build-linux:
-    name: Build Linux (x64)
+    name: Build Linux (x64, ${{ matrix.backend }})
+    needs: plan-matrix
     runs-on: ${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: ${{ fromJSON(needs.plan-matrix.outputs.backends) }}
 
     steps:
       - name: Checkout repository
@@ -105,6 +149,32 @@ jobs:
           fi
           echo "Bundle types: $BUNDLES"
 
+      # Maps the matrix backend to the Cargo feature flags for the main app
+      # (frontend/src-tauri, see its `cuda`/`vulkan`/`openblas` features in
+      # Cargo.toml) and for the llama-helper sidecar (its own `cuda`/`vulkan`
+      # features), which build separately.
+      - name: Determine backend feature flags
+        id: backend-features
+        shell: bash
+        run: |
+          case "${{ matrix.backend }}" in
+            cpu)
+              echo "app_features=openblas" >> "$GITHUB_OUTPUT"
+              echo "llama_features=" >> "$GITHUB_OUTPUT"
+              echo "artifact_suffix=cpu" >> "$GITHUB_OUTPUT"
+              ;;
+            cuda)
+              echo "app_features=cuda" >> "$GITHUB_OUTPUT"
+              echo "llama_features=--features cuda" >> "$GITHUB_OUTPUT"
+              echo "artifact_suffix=cuda" >> "$GITHUB_OUTPUT"
+              ;;
+            vulkan)
+              echo "app_features=vulkan" >> "$GITHUB_OUTPUT"
+              echo "llama_features=--features vulkan" >> "$GITHUB_OUTPUT"
+              echo "artifact_suffix=vulkan" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -138,7 +208,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          key: ${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x86_64-unknown-linux-gnu
+          key: ${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x86_64-unknown-linux-gnu-${{ matrix.backend }}
 
       - name: Install dependencies (Ubuntu 24.04)
         if: github.event.inputs.ubuntu-version == 'ubuntu-24.04'
@@ -176,6 +246,25 @@ jobs:
           sudo apt install vulkan-sdk -y
           sudo apt-get install -y mesa-vulkan-drivers
 
+      # CUDA is only needed on the cuda leg. GitHub-hosted Linux runners have
+      # no NVIDIA GPU, so this installs the toolkit (headers/nvcc/libs) to
+      # compile against, but the resulting binary cannot be exercised on a
+      # real GPU in CI. It runs correctly on an end user's NVIDIA machine.
+      # Uses NVIDIA's official CUDA apt repo (12.x) rather than the outdated
+      # `nvidia-cuda-toolkit` multiverse package (still on CUDA 11.5 as of
+      # this writing), since ort/whisper-rs expect a modern CUDA toolchain.
+      - name: Install CUDA Toolkit (cuda backend only)
+        if: matrix.backend == 'cuda'
+        shell: bash
+        run: |
+          UBUNTU_CODENAME=$(. /etc/os-release && echo "${VERSION_ID//./}")
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_CODENAME}/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-4
+          echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+          echo "CUDA_PATH=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
+
       - name: Install FUSE for AppImage
         run: |
           sudo apt-get update
@@ -188,13 +277,13 @@ jobs:
 
       - name: Build llama-helper sidecar
         run: |
-          echo "Building llama-helper sidecar (CPU mode)..."
-          cargo build --release -p llama-helper
-          
+          echo "Building llama-helper sidecar (backend: ${{ matrix.backend }})..."
+          cargo build --release -p llama-helper ${{ steps.backend-features.outputs.llama_features }}
+
           # Copy binary to binaries directory
           mkdir -p frontend/src-tauri/binaries
           cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu
-          
+
           echo "Copied llama-helper to frontend/src-tauri/binaries/"
           ls -la frontend/src-tauri/binaries/
 
@@ -212,7 +301,7 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         with:
           projectPath: frontend
-          args: --target x86_64-unknown-linux-gnu --features openblas ${{ steps.build-profile.outputs.args }}
+          args: --target x86_64-unknown-linux-gnu --features ${{ steps.backend-features.outputs.app_features }} ${{ steps.build-profile.outputs.args }}
 
       - name: Verify build artifacts
         run: |
@@ -307,7 +396,7 @@ jobs:
         if: ${{ github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-linux-${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
+          name: meetily-linux-${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x64-${{ steps.backend-features.outputs.artifact_suffix }}-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
           path: |
             target/x86_64-unknown-linux-gnu/${{ steps.build-profile.outputs.profile }}/bundle/deb/*.deb
             target/x86_64-unknown-linux-gnu/${{ steps.build-profile.outputs.profile }}/bundle/appimage/*.AppImage
@@ -316,11 +405,12 @@ jobs:
 
       - name: Generate build summary
         run: |
-          echo "## 🐧 Linux Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🐧 Linux Build Summary (${{ matrix.backend }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Version** | ${{ steps.get-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Backend** | ${{ matrix.backend }} (\`--features ${{ steps.backend-features.outputs.app_features }}\`) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build Profile** | ${{ steps.build-profile.outputs.profile }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Target** | x86_64-unknown-linux-gnu |" >> $GITHUB_STEP_SUMMARY
           echo "| **Ubuntu Version** | ${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }} |" >> $GITHUB_STEP_SUMMARY
