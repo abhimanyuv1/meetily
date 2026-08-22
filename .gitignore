@@ -90,3 +90,7 @@ frontend/src-tauri/binaries/
 # Google Calendar OAuth client credentials (never commit)
 frontend/src-tauri/secrets/
 client_secret*.json
+
+# Tauri updater signing keys (never commit the private half)
+*.key
+!*.key.pub

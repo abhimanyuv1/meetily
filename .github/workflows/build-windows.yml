@@ -666,6 +666,45 @@ jobs:
           path: frontend/src-tauri/binaries/ffmpeg-*.exe
           key: ${{ runner.os }}-ffmpeg-${{ hashFiles('frontend/src-tauri/build.rs', 'frontend/src-tauri/build/ffmpeg.rs') }}
 
+      # frontend/src-tauri/build/google_oauth.rs embeds the Google Calendar OAuth
+      # client id/secret at compile time from this gitignored file. The secrets
+      # dir is never committed, so without this step CI ships binaries where
+      # calendar integration is permanently disabled ("Google Calendar client not
+      # configured" at runtime). Forks and PRs without the secret keep building
+      # exactly as before: the step no-ops and build.rs just warns.
+      - name: Write Google Calendar OAuth credentials
+        shell: bash
+        env:
+          GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_OAUTH_CLIENT_JSON" ]; then
+            echo "::warning::GOOGLE_OAUTH_CLIENT_JSON secret not set - calendar integration will be disabled in this build"
+            exit 0
+          fi
+          mkdir -p frontend/src-tauri/secrets
+          printf '%s' "$GOOGLE_OAUTH_CLIENT_JSON" > frontend/src-tauri/secrets/google_oauth_client.json
+          # Validate the shape now, so a malformed secret fails loudly here
+          # instead of silently producing a build with calendar disabled.
+          # Uses node (every one of these jobs runs setup-node) rather than
+          # python3, which is not on PATH for bash on the Windows runners.
+          node -e '
+          const fs = require("fs");
+          let data;
+          try {
+            data = JSON.parse(fs.readFileSync("frontend/src-tauri/secrets/google_oauth_client.json", "utf8"));
+          } catch (e) {
+            console.log("::error::GOOGLE_OAUTH_CLIENT_JSON is not valid JSON: " + e.message);
+            process.exit(1);
+          }
+          const creds = data.installed || data;
+          const missing = ["client_id", "client_secret"].filter((k) => !creds[k]);
+          if (missing.length) {
+            console.log("::error::GOOGLE_OAUTH_CLIENT_JSON missing field(s): " + missing.join(", "));
+            process.exit(1);
+          }
+          console.log("Google OAuth client credentials staged for build");
+          '
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
