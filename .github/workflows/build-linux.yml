@@ -349,6 +349,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy (used for the appimage bundle) strips bundled system
+          # libraries and chokes on modern .relr.dyn relocation sections with
+          # `failed to run linuxdeploy` (see tauri-apps/tauri#14796 and
+          # docs/building_in_linux.md's "AppImage build stripping symbols").
+          # NO_STRIP=true is what build-gpu.sh sets for local AppImage builds;
+          # CI calls tauri-action directly and needs it set explicitly here.
+          NO_STRIP: "true"
           # Tauri updater signing (ALWAYS enabled for .sig files)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
