@@ -132,12 +132,11 @@ jobs:
           # Determine bundle arguments
           BUNDLE_TYPE="${{ github.event.inputs.bundle-type }}"
           if [[ "$BUNDLE_TYPE" == "all" ]] || [[ -z "$BUNDLE_TYPE" ]]; then
-            # Default based on Ubuntu version
-            if [[ "${{ github.event.inputs.ubuntu-version }}" == "ubuntu-24.04" ]]; then
-              BUNDLES="appimage,rpm"
-            else
-              BUNDLES="deb"
-            fi
+            # "all" builds every Linux package format Tauri v2 supports on
+            # this runner (deb, rpm, and appimage all work on both 22.04 and
+            # 24.04; FUSE for AppImage is installed unconditionally below and
+            # rpm bundling is native to tauri-bundler, no rpmbuild required).
+            BUNDLES="deb,appimage,rpm"
           else
             BUNDLES="$BUNDLE_TYPE"
           fi
