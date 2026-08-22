@@ -284,6 +284,32 @@ jobs:
           echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
           echo "CUDA_PATH=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
 
+      # `meetily` links against libcuda.so.1 (the real NVIDIA driver library,
+      # loaded at runtime via the driver API) but GitHub's Linux runners have
+      # no NVIDIA GPU and therefore no driver package, so libcuda.so.1 does
+      # not exist anywhere on the system. That's fine for compiling and
+      # linking (the linker only needs the SONAME), but linuxdeploy resolves
+      # and bundles every ELF dependency by walking `ldd` at AppImage-build
+      # time, and fails outright when a dependency can't be found:
+      #   ERROR: Could not find dependency: libcuda.so.1
+      # cuda-toolkit-12-4 does ship a link-time stub (a real libcuda.so with
+      # the driver API symbols, just no device-side implementation) at
+      # targets/x86_64-linux/lib/stubs/libcuda.so, meant for building against
+      # without a physical GPU present. It just lacks the .1-versioned SONAME
+      # symlink ldconfig would normally create from an actual driver install.
+      # Registering that with the standard SONAME is the same workaround
+      # NVIDIA's own install docs describe ("Add libcuda.so symbolic link, if
+      # necessary") and what every CUDA-in-a-GPU-less-container guide does.
+      - name: Symlink libcuda.so.1 stub for the AppImage bundler
+        if: matrix.backend == 'cuda'
+        run: |
+          STUBS_DIR=/usr/local/cuda-12.4/targets/x86_64-linux/lib/stubs
+          test -f "$STUBS_DIR/libcuda.so" || { echo "::error::libcuda.so stub not found under $STUBS_DIR"; exit 1; }
+          sudo ln -sf libcuda.so "$STUBS_DIR/libcuda.so.1"
+          echo "$STUBS_DIR" | sudo tee /etc/ld.so.conf.d/cuda-stubs.conf
+          sudo ldconfig
+          ldconfig -p | grep libcuda.so.1
+
       - name: Install FUSE for AppImage
         run: |
           sudo apt-get update
