@@ -132,12 +132,11 @@ jobs:
           # Determine bundle arguments
           BUNDLE_TYPE="${{ github.event.inputs.bundle-type }}"
           if [[ "$BUNDLE_TYPE" == "all" ]] || [[ -z "$BUNDLE_TYPE" ]]; then
-            # Default based on Ubuntu version
-            if [[ "${{ github.event.inputs.ubuntu-version }}" == "ubuntu-24.04" ]]; then
-              BUNDLES="appimage,rpm"
-            else
-              BUNDLES="deb"
-            fi
+            # "all" builds every Linux package format Tauri v2 supports on
+            # this runner (deb, rpm, and appimage all work on both 22.04 and
+            # 24.04; FUSE for AppImage is installed unconditionally below and
+            # rpm bundling is native to tauri-bundler, no rpmbuild required).
+            BUNDLES="deb,appimage,rpm"
           else
             BUNDLES="$BUNDLE_TYPE"
           fi
@@ -228,6 +227,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev
 
+      # whisper-rs-sys 0.15's build.rs hard-panics with
+      # "BLAS_INCLUDE_DIRS environment variable must be set when using OpenBLAS"
+      # whenever the openblas feature is on: it never probes pkg-config, it just
+      # forwards this variable to CMake. The cpu leg builds the app with
+      # --features openblas, so without this the Tauri build fails. libopenblas-dev
+      # puts cblas.h in the multiarch include dir on jammy/noble, but resolve it
+      # dynamically so a layout change doesn't silently reintroduce the panic.
+      - name: Resolve OpenBLAS include dir
+        shell: bash
+        run: |
+          for dir in /usr/include/x86_64-linux-gnu /usr/include/openblas /usr/include; do
+            if [[ -f "$dir/cblas.h" ]]; then
+              echo "Found cblas.h in $dir"
+              echo "BLAS_INCLUDE_DIRS=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::cblas.h not found; is libopenblas-dev installed?"
+          exit 1
+
       - name: Prepare Vulkan SDK (Ubuntu 24.04)
         if: github.event.inputs.ubuntu-version == 'ubuntu-24.04'
         run: |
@@ -261,7 +280,7 @@ jobs:
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_CODENAME}/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
-          sudo apt-get install -y cuda-toolkit-12-4
+          sudo apt-get install -y cuda-toolkit-12-4 libnccl2 libnccl-dev
           echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
           echo "CUDA_PATH=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
 
@@ -286,6 +305,45 @@ jobs:
 
           echo "Copied llama-helper to frontend/src-tauri/binaries/"
           ls -la frontend/src-tauri/binaries/
+
+      # frontend/src-tauri/build/google_oauth.rs embeds the Google Calendar OAuth
+      # client id/secret at compile time from this gitignored file. The secrets
+      # dir is never committed, so without this step CI ships binaries where
+      # calendar integration is permanently disabled ("Google Calendar client not
+      # configured" at runtime). Forks and PRs without the secret keep building
+      # exactly as before: the step no-ops and build.rs just warns.
+      - name: Write Google Calendar OAuth credentials
+        shell: bash
+        env:
+          GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_OAUTH_CLIENT_JSON" ]; then
+            echo "::warning::GOOGLE_OAUTH_CLIENT_JSON secret not set - calendar integration will be disabled in this build"
+            exit 0
+          fi
+          mkdir -p frontend/src-tauri/secrets
+          printf '%s' "$GOOGLE_OAUTH_CLIENT_JSON" > frontend/src-tauri/secrets/google_oauth_client.json
+          # Validate the shape now, so a malformed secret fails loudly here
+          # instead of silently producing a build with calendar disabled.
+          # Uses node (every one of these jobs runs setup-node) rather than
+          # python3, which is not on PATH for bash on the Windows runners.
+          node -e '
+          const fs = require("fs");
+          let data;
+          try {
+            data = JSON.parse(fs.readFileSync("frontend/src-tauri/secrets/google_oauth_client.json", "utf8"));
+          } catch (e) {
+            console.log("::error::GOOGLE_OAUTH_CLIENT_JSON is not valid JSON: " + e.message);
+            process.exit(1);
+          }
+          const creds = data.installed || data;
+          const missing = ["client_id", "client_secret"].filter((k) => !creds[k]);
+          if (missing.length) {
+            console.log("::error::GOOGLE_OAUTH_CLIENT_JSON missing field(s): " + missing.join(", "));
+            process.exit(1);
+          }
+          console.log("Google OAuth client credentials staged for build");
+          '
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
