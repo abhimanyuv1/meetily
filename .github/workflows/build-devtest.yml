@@ -119,6 +119,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev fuse libfuse2
 
+      # Linux builds below pass --features openblas, and whisper-rs-sys 0.15's
+      # build.rs panics outright unless BLAS_INCLUDE_DIRS points at the dir
+      # holding cblas.h (it forwards the value straight to CMake, no probing).
+      - name: Resolve OpenBLAS include dir (Linux)
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        run: |
+          for dir in /usr/include/x86_64-linux-gnu /usr/include/openblas /usr/include; do
+            if [[ -f "$dir/cblas.h" ]]; then
+              echo "Found cblas.h in $dir"
+              echo "BLAS_INCLUDE_DIRS=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::cblas.h not found; is libopenblas-dev installed?"
+          exit 1
+
       - name: Prepare Vulkan SDK (Ubuntu 24.04)
         if: matrix.platform == 'ubuntu-24.04'
         run: |

@@ -228,6 +228,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev
 
+      # whisper-rs-sys 0.15's build.rs hard-panics with
+      # "BLAS_INCLUDE_DIRS environment variable must be set when using OpenBLAS"
+      # whenever the openblas feature is on: it never probes pkg-config, it just
+      # forwards this variable to CMake. The cpu leg builds the app with
+      # --features openblas, so without this the Tauri build fails. libopenblas-dev
+      # puts cblas.h in the multiarch include dir on jammy/noble, but resolve it
+      # dynamically so a layout change doesn't silently reintroduce the panic.
+      - name: Resolve OpenBLAS include dir
+        shell: bash
+        run: |
+          for dir in /usr/include/x86_64-linux-gnu /usr/include/openblas /usr/include; do
+            if [[ -f "$dir/cblas.h" ]]; then
+              echo "Found cblas.h in $dir"
+              echo "BLAS_INCLUDE_DIRS=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::cblas.h not found; is libopenblas-dev installed?"
+          exit 1
+
       - name: Prepare Vulkan SDK (Ubuntu 24.04)
         if: github.event.inputs.ubuntu-version == 'ubuntu-24.04'
         run: |
