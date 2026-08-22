@@ -345,16 +345,24 @@ jobs:
           console.log("Google OAuth client credentials staged for build");
           '
 
+      # cuda-toolkit-12-4 alone is several GB, on top of the Rust build
+      # artifacts and node_modules already on disk. If the cuda leg runs the
+      # runner low on space, linuxdeploy (which downloads its own tools and
+      # writes an AppDir + squashfs image) can fail in ways that surface only
+      # as the unhelpful generic "failed to run linuxdeploy" - this makes
+      # that visible in the log before we get there.
+      - name: Report disk space before bundling
+        run: df -h /
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # linuxdeploy (used for the appimage bundle) strips bundled system
-          # libraries and chokes on modern .relr.dyn relocation sections with
-          # `failed to run linuxdeploy` (see tauri-apps/tauri#14796 and
-          # docs/building_in_linux.md's "AppImage build stripping symbols").
-          # NO_STRIP=true is what build-gpu.sh sets for local AppImage builds;
-          # CI calls tauri-action directly and needs it set explicitly here.
+          # NO_STRIP=true: harmless no-op on the tauri-cli version pinned here
+          # (2.11.x removed the strip step entirely - confirmed absent from
+          # the compiled CLI binary's strings). Left set in case an older/
+          # newer CLI reintroduces strip-related linuxdeploy failures
+          # (tauri-apps/tauri#14796); see docs/building_in_linux.md.
           NO_STRIP: "true"
           # Tauri updater signing (ALWAYS enabled for .sig files)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -366,7 +374,13 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         with:
           projectPath: frontend
-          args: --target x86_64-unknown-linux-gnu --features ${{ steps.backend-features.outputs.app_features }} ${{ steps.build-profile.outputs.args }}
+          # -v matters here beyond normal log verbosity: tauri-bundler's
+          # linuxdeploy invocation only captures/logs linuxdeploy's own
+          # stdout/stderr when verbosity is above the default Error level
+          # (see appimage/linuxdeploy.rs upstream); at the default level a
+          # linuxdeploy failure surfaces only as the generic
+          # "failed to run linuxdeploy" with no indication of the real cause.
+          args: --target x86_64-unknown-linux-gnu --features ${{ steps.backend-features.outputs.app_features }} ${{ steps.build-profile.outputs.args }} -v
 
       - name: Verify build artifacts
         run: |
