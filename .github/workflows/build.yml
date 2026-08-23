@@ -627,6 +627,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy (used for the appimage bundle) strips bundled system
+          # libraries and chokes on modern .relr.dyn relocation sections with
+          # `failed to run linuxdeploy` (see tauri-apps/tauri#14796). Only
+          # meaningful when this reusable workflow is invoked for Linux.
+          NO_STRIP: ${{ contains(inputs.platform, 'ubuntu') && 'true' || '' }}
           APPLE_ID: ${{ inputs.sign-binaries && secrets.APPLE_ID || '' }}
           APPLE_ID_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_ID_PASSWORD || '' }}
           APPLE_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_PASSWORD || '' }}

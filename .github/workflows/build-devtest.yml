@@ -431,6 +431,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy (used for the appimage bundle) strips bundled system
+          # libraries and chokes on modern .relr.dyn relocation sections with
+          # `failed to run linuxdeploy` (see tauri-apps/tauri#14796). Only
+          # meaningful on the Linux legs of this matrix.
+          NO_STRIP: ${{ contains(matrix.platform, 'ubuntu') && 'true' || '' }}
           # macOS platform code signing
           APPLE_ID: ${{ contains(matrix.platform, 'macos') && secrets.APPLE_ID || '' }}
           APPLE_ID_PASSWORD: ${{ contains(matrix.platform, 'macos') && secrets.APPLE_ID_PASSWORD || '' }}
@@ -457,6 +462,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # See NO_STRIP note above.
+          NO_STRIP: ${{ contains(matrix.platform, 'ubuntu') && 'true' || '' }}
           # Tauri updater signing (ALWAYS enabled for .sig files)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
