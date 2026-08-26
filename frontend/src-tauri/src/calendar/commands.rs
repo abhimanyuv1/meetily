@@ -7,19 +7,49 @@ use crate::database::repositories::calendar::CalendarRepository;
 use crate::state::AppState;
 use chrono::{Duration as ChronoDuration, Utc};
 
-fn status_dto_from_account(account: Option<crate::database::models::CalendarAccount>) -> CalendarAccountStatusDto {
-    match account {
+/// Builds the full status DTO, including bring-your-own credential presence.
+async fn build_status_dto(
+    pool: &sqlx::SqlitePool,
+) -> Result<CalendarAccountStatusDto, String> {
+    let account = CalendarRepository::get_account(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let creds = CalendarRepository::get_oauth_client(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut dto = match account {
         Some(acc) => CalendarAccountStatusDto {
             connected: acc.status == "connected",
             email: Some(acc.email),
             status: acc.status,
+            credentials_configured: false,
+            client_id_hint: None,
         },
         None => CalendarAccountStatusDto {
             connected: false,
             email: None,
             status: "disconnected".to_string(),
+            credentials_configured: false,
+            client_id_hint: None,
         },
+    };
+    dto.credentials_configured = creds.is_some();
+    dto.client_id_hint = creds.as_ref().map(|c| shorten_client_id(&c.client_id));
+    Ok(dto)
+}
+
+/// Client ids are not secret (they appear in browser URLs during sign-in), but
+/// they're long — trim the middle so users can recognize which Google project
+/// a stored credential belongs to.
+fn shorten_client_id(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 48 {
+        return id.to_string();
     }
+    let head: String = chars[..12].iter().collect();
+    let tail: String = chars[chars.len() - 24..].iter().collect();
+    format!("{}…{}", head, tail)
 }
 
 /// Runs the full OAuth loopback flow and persists the resulting tokens. Blocks (async)
@@ -28,16 +58,19 @@ fn status_dto_from_account(account: Option<crate::database::models::CalendarAcco
 pub async fn calendar_connect(
     state: tauri::State<'_, AppState>,
 ) -> Result<CalendarAccountStatusDto, String> {
+    let pool = state.db_manager.pool();
+    let creds = oauth::load_client_credentials(pool).await?;
+
     let pkce = oauth::generate_pkce();
     let state_token = oauth::generate_state();
     let (listener, port) = oauth::bind_loopback_listener().await?;
-    let auth_url = oauth::build_auth_url(port, &state_token, &pkce.challenge)?;
+    let auth_url = oauth::build_auth_url(port, &state_token, &pkce.challenge, &creds)?;
 
     log::info!("Opening browser for Google Calendar sign-in");
     crate::api::open_external_url(auth_url).await?;
 
     let code = oauth::await_callback(listener, &state_token).await?;
-    let tokens = oauth::exchange_code(&code, &pkce.verifier, port).await?;
+    let tokens = oauth::exchange_code(&code, &pkce.verifier, port, &creds).await?;
     let email = oauth::fetch_connected_email(&tokens.access_token).await?;
 
     let pool = state.db_manager.pool();
@@ -55,11 +88,7 @@ pub async fn calendar_connect(
 
     log::info!("Google Calendar connected: {}", email);
 
-    Ok(CalendarAccountStatusDto {
-        connected: true,
-        email: Some(email),
-        status: "connected".to_string(),
-    })
+    build_status_dto(pool).await
 }
 
 #[tauri::command]
@@ -69,14 +98,49 @@ pub async fn calendar_disconnect(state: tauri::State<'_, AppState>) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+/// Stores user-supplied Google OAuth Desktop-app client credentials (parsed
+/// from the JSON downloaded out of Google Cloud Console).
+#[tauri::command]
+pub async fn calendar_set_credentials(
+    state: tauri::State<'_, AppState>,
+    raw_json: String,
+) -> Result<(), String> {
+    let creds = oauth::parse_client_json(&raw_json)?;
+    CalendarRepository::save_oauth_client(
+        state.db_manager.pool(),
+        &creds.client_id,
+        &creds.client_secret,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    log::info!("Google OAuth client credentials saved (bring-your-own)");
+    Ok(())
+}
+
+/// Removes the stored client credentials. Only allowed while no account is
+/// connected: an account's refresh tokens only work with the client that made
+/// them, so clearing mid-connection would leave tokens unusable on refresh.
+#[tauri::command]
+pub async fn calendar_clear_credentials(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    if CalendarRepository::get_account(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err("Disconnect your Google account before removing its sign-in credentials".to_string());
+    }
+    CalendarRepository::clear_oauth_client(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn calendar_get_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<CalendarAccountStatusDto, String> {
-    let account = CalendarRepository::get_account(state.db_manager.pool())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(status_dto_from_account(account))
+    build_status_dto(state.db_manager.pool()).await
 }
 
 /// Meetings synced from the connected calendar in the next 24h (plus a 1h lookback so

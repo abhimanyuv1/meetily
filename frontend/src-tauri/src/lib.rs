@@ -772,6 +772,8 @@ pub fn run() {
             // Google Calendar integration commands
             calendar::commands::calendar_connect,
             calendar::commands::calendar_disconnect,
+            calendar::commands::calendar_set_credentials,
+            calendar::commands::calendar_clear_credentials,
             calendar::commands::calendar_get_status,
             calendar::commands::calendar_get_upcoming_events,
             calendar::commands::calendar_get_auto_start_settings,

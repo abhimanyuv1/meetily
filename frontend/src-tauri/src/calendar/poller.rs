@@ -69,7 +69,8 @@ async fn sync_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
     // Refresh proactively if the token is expired or about to be (2 min buffer).
     let access_token = if account.token_expires_at <= Utc::now() + ChronoDuration::minutes(2) {
-        match oauth::refresh_access_token(&account.refresh_token).await {
+        let creds = oauth::load_client_credentials(pool).await?;
+        match oauth::refresh_access_token(&account.refresh_token, &creds).await {
             Ok(refreshed) => {
                 let new_expiry = Utc::now() + ChronoDuration::seconds(refreshed.expires_in);
                 let _ = CalendarRepository::update_access_token(

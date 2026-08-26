@@ -60,11 +60,16 @@ pub struct GoogleEntryPoint {
 // ---- Frontend-facing DTOs ----
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CalendarAccountStatusDto {
     pub connected: bool,
     pub email: Option<String>,
     /// "connected" | "needs_reauth" | "disconnected"
     pub status: String,
+    /// Whether the user has stored their own Google OAuth client credentials.
+    pub credentials_configured: bool,
+    /// Truncated display form of the stored client id, if any.
+    pub client_id_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

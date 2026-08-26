@@ -17,16 +17,65 @@ const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-fn client_id() -> Result<&'static str, String> {
-    option_env!("GOOGLE_CALENDAR_CLIENT_ID")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Google Calendar client not configured (missing GOOGLE_CALENDAR_CLIENT_ID at build time)".to_string())
+/// Google OAuth Desktop-app client credentials, supplied by the user at
+/// runtime (bring-your-own) and stored in the local database instead of being
+/// compiled into the binary.
+#[derive(Debug, Clone)]
+pub struct ClientCredentials {
+    pub client_id: String,
+    pub client_secret: String,
 }
 
-fn client_secret() -> Result<&'static str, String> {
-    option_env!("GOOGLE_CALENDAR_CLIENT_SECRET")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Google Calendar client not configured (missing GOOGLE_CALENDAR_CLIENT_SECRET at build time)".to_string())
+/// Loads the user-supplied credentials from SQLite.
+pub async fn load_client_credentials(
+    pool: &sqlx::SqlitePool,
+) -> Result<ClientCredentials, String> {
+    crate::database::repositories::calendar::CalendarRepository::get_oauth_client(pool)
+        .await
+        .map_err(|e| format!("Failed to read stored Google OAuth credentials: {}", e))?
+        .map(|c| ClientCredentials {
+            client_id: c.client_id,
+            client_secret: c.client_secret,
+        })
+        .ok_or_else(|| {
+            "No Google OAuth credentials configured. Add your own Google Cloud OAuth client JSON in Settings → Calendar first (see the setup guide there).".to_string()
+        })
+}
+
+/// Parses the JSON downloaded from Google Cloud Console for a "Desktop app"
+/// OAuth client. Accepts both the wrapped `{"installed": {...}}` shape and a
+/// bare `{client_id, client_secret}` object. "Web application" clients are
+/// rejected with an actionable hint, since their redirect-URI model doesn't
+/// work with our loopback flow.
+pub fn parse_client_json(raw: &str) -> Result<ClientCredentials, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("Not valid JSON: {}", e))?;
+
+    let creds_obj = if v.get("installed").is_some() {
+        v.get("installed").unwrap()
+    } else if v.get("web").is_some() {
+        return Err("This is a 'Web application' OAuth client, but Meetily needs a 'Desktop app' client. In Google Cloud Console: Credentials → Create Credentials → OAuth client ID → Desktop app.".to_string());
+    } else if v.get("client_id").is_some() && v.get("client_secret").is_some() {
+        &v
+    } else {
+        return Err("Missing client_id/client_secret — download the Desktop-app client JSON from Google Cloud Console (Credentials → your OAuth 2.0 Client ID → Download JSON).".to_string());
+    };
+
+    let field = |k: &str| {
+        creds_obj
+            .get(k)
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    match (field("client_id"), field("client_secret")) {
+        (Some(client_id), Some(client_secret)) => Ok(ClientCredentials {
+            client_id,
+            client_secret,
+        }),
+        _ => Err("The JSON is missing a non-empty client_id or client_secret".to_string()),
+    }
 }
 
 pub struct PkceChallenge {
@@ -68,11 +117,16 @@ pub fn redirect_uri(port: u16) -> String {
     format!("http://127.0.0.1:{}/callback", port)
 }
 
-pub fn build_auth_url(port: u16, state: &str, code_challenge: &str) -> Result<String, String> {
+pub fn build_auth_url(
+    port: u16,
+    state: &str,
+    code_challenge: &str,
+    creds: &ClientCredentials,
+) -> Result<String, String> {
     let url = url::Url::parse_with_params(
         AUTH_ENDPOINT,
         &[
-            ("client_id", client_id()?),
+            ("client_id", creds.client_id.as_str()),
             ("redirect_uri", &redirect_uri(port)),
             ("response_type", "code"),
             ("scope", SCOPE),
@@ -150,12 +204,17 @@ pub struct ExchangedTokens {
     pub expires_in: i64,
 }
 
-pub async fn exchange_code(code: &str, verifier: &str, port: u16) -> Result<ExchangedTokens, String> {
+pub async fn exchange_code(
+    code: &str,
+    verifier: &str,
+    port: u16,
+    creds: &ClientCredentials,
+) -> Result<ExchangedTokens, String> {
     let client = reqwest::Client::new();
     let params = [
         ("code", code),
-        ("client_id", client_id()?),
-        ("client_secret", client_secret()?),
+        ("client_id", creds.client_id.as_str()),
+        ("client_secret", creds.client_secret.as_str()),
         ("redirect_uri", &redirect_uri(port)),
         ("grant_type", "authorization_code"),
         ("code_verifier", verifier),
@@ -196,12 +255,15 @@ pub struct RefreshedTokens {
     pub expires_in: i64,
 }
 
-pub async fn refresh_access_token(refresh_token: &str) -> Result<RefreshedTokens, String> {
+pub async fn refresh_access_token(
+    refresh_token: &str,
+    creds: &ClientCredentials,
+) -> Result<RefreshedTokens, String> {
     let client = reqwest::Client::new();
     let params = [
         ("refresh_token", refresh_token),
-        ("client_id", client_id()?),
-        ("client_secret", client_secret()?),
+        ("client_id", creds.client_id.as_str()),
+        ("client_secret", creds.client_secret.as_str()),
         ("grant_type", "refresh_token"),
     ];
 

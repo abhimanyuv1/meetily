@@ -1,4 +1,4 @@
-use crate::database::models::{CalendarAccount, CalendarEvent};
+use crate::database::models::{CalendarAccount, CalendarEvent, CalendarOAuthClient};
 use chrono::{DateTime, Utc};
 use sqlx::{Error as SqlxError, SqlitePool};
 
@@ -98,6 +98,57 @@ impl CalendarRepository {
     /// Disconnects the account; synced events cascade-delete with it.
     pub async fn disconnect(pool: &SqlitePool) -> Result<(), SqlxError> {
         sqlx::query("DELETE FROM calendar_accounts WHERE id = 1")
+            .execute(pool)
+            .await?;
+
+        Ok(())
+    }
+
+    // ---- Bring-your-own OAuth client credentials ----
+
+    pub async fn get_oauth_client(
+        pool: &SqlitePool,
+    ) -> Result<Option<CalendarOAuthClient>, SqlxError> {
+        sqlx::query_as::<_, CalendarOAuthClient>(
+            "SELECT * FROM calendar_oauth_clients WHERE id = 1",
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Upserts the user-supplied Google OAuth Desktop-app client credentials.
+    pub async fn save_oauth_client(
+        pool: &SqlitePool,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<(), SqlxError> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO calendar_oauth_clients
+                (id, client_id, client_secret, created_at, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                client_id = excluded.client_id,
+                client_secret = excluded.client_secret,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(client_id)
+        .bind(client_secret)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Removes stored client credentials. Only meaningful while no account is
+    /// connected: an account's refresh tokens are bound to the client that
+    /// created them.
+    pub async fn clear_oauth_client(pool: &SqlitePool) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM calendar_oauth_clients WHERE id = 1")
             .execute(pool)
             .await?;
 

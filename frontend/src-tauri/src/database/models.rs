@@ -125,6 +125,17 @@ pub struct CalendarAccount {
     pub auto_stop_grace_minutes: i64,
 }
 
+/// User-supplied Google OAuth Desktop-app client credentials (bring-your-own),
+/// stored locally so builds never need embedded secrets.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CalendarOAuthClient {
+    pub id: i64,
+    pub client_id: String,
+    pub client_secret: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CalendarEvent {
     pub id: String,
