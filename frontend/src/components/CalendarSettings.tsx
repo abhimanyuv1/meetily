@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { CalendarDays, CheckCircle2, ExternalLink, Play, RefreshCw, XCircle } from 'lucide-react';
+import { CalendarDays, CheckCircle2, ExternalLink, KeyRound, Play, RefreshCw, Upload, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -13,6 +13,8 @@ interface CalendarAccountStatus {
   connected: boolean;
   email: string | null;
   status: string; // "connected" | "needs_reauth" | "disconnected"
+  credentialsConfigured: boolean;
+  clientIdHint: string | null;
 }
 
 interface AutoStartSettings {
@@ -33,7 +35,13 @@ interface CalendarEventDto {
 
 export function CalendarSettings() {
   const router = useRouter();
-  const [status, setStatus] = useState<CalendarAccountStatus>({ connected: false, email: null, status: 'disconnected' });
+  const [status, setStatus] = useState<CalendarAccountStatus>({
+    connected: false,
+    email: null,
+    status: 'disconnected',
+    credentialsConfigured: false,
+    clientIdHint: null,
+  });
   const [events, setEvents] = useState<CalendarEventDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -112,12 +120,45 @@ export function CalendarSettings() {
   const handleDisconnect = async () => {
     try {
       await invoke('calendar_disconnect');
-      setStatus({ connected: false, email: null, status: 'disconnected' });
+      setStatus({
+        connected: false,
+        email: null,
+        status: 'disconnected',
+        credentialsConfigured: status.credentialsConfigured,
+        clientIdHint: status.clientIdHint,
+      });
       setEvents([]);
       toast.success('Google Calendar disconnected');
     } catch (error) {
       console.error('Failed to disconnect Google Calendar:', error);
       toast.error('Failed to disconnect Google Calendar');
+    }
+  };
+
+  const handleCredentialsFile = async (file: File) => {
+    try {
+      const rawJson = await file.text();
+      await invoke('calendar_set_credentials', { rawJson });
+      await loadStatus();
+      toast.success('Your Google OAuth credentials were saved on this device');
+    } catch (error) {
+      console.error('Failed to save Google OAuth credentials:', error);
+      toast.error('Could not use that credentials file', {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleClearCredentials = async () => {
+    try {
+      await invoke('calendar_clear_credentials');
+      await loadStatus();
+      toast.success('Stored credentials removed');
+    } catch (error) {
+      console.error('Failed to remove Google OAuth credentials:', error);
+      toast.error('Failed to remove credentials', {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -176,7 +217,8 @@ export function CalendarSettings() {
           ) : (
             <button
               onClick={handleConnect}
-              disabled={connecting}
+              disabled={connecting || !status.credentialsConfigured}
+              title={status.credentialsConfigured ? undefined : 'Add your own Google credentials first — see “Google sign-in credentials” below'}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-60 transition-colors flex items-center gap-2"
             >
               {connecting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
@@ -190,6 +232,111 @@ export function CalendarSettings() {
           conferencing links (Google Meet, Zoom, Teams) — it never edits your calendar.
         </p>
       </div>
+
+      {/* Bring-your-own Google OAuth client credentials */}
+      {!status.connected && (
+        <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-gray-600" />
+                Google sign-in credentials (bring your own)
+              </h3>
+              <p className="text-sm text-gray-500 mt-1">
+                Meetily never ships its own Google keys. You sign in through a free Google Cloud project that{' '}
+                <strong>you own</strong>: credentials and tokens stay on this device, nothing about your account
+                flows through us, and API usage counts against your own free quota instead of a shared one.
+              </p>
+            </div>
+            {status.credentialsConfigured && (
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <span
+                  className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1 max-w-[280px]"
+                  title={status.clientIdHint ?? undefined}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{status.clientIdHint ?? 'configured'}</span>
+                </span>
+                <button
+                  onClick={handleClearCredentials}
+                  className="text-xs text-gray-500 hover:text-red-600 transition-colors"
+                >
+                  Remove stored credentials
+                </button>
+              </div>
+            )}
+          </div>
+
+          {!status.credentialsConfigured ? (
+            <div>
+              <label className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-blue-700 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors cursor-pointer">
+                <Upload className="h-4 w-4" />
+                Upload client JSON…
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleCredentialsFile(file);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+          ) : (
+            <p className="text-sm text-green-700 flex items-center gap-1.5">
+              <CheckCircle2 className="h-4 w-4" />
+              Credentials ready — click “Connect Google Calendar” above to sign in.
+            </p>
+          )}
+
+          <details className="group bg-gray-50 border border-gray-100 rounded-md">
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 group-open:text-blue-700">
+              How to create your keys (free, ~5 minutes, one time)
+            </summary>
+            <ol className="list-decimal pl-8 pr-4 pb-4 mt-2 space-y-3 text-sm text-gray-600">
+              <li>
+                Open <span className="font-mono text-xs">console.cloud.google.com</span>, sign in with your Google
+                account, and create a project (any name works, e.g. “My Meetily”). The free tier is all you need —
+                you are creating <em>your own</em> project so that Google knows the app asking for permission is
+                yours, not ours.
+              </li>
+              <li>
+                Go to <strong>APIs &amp; Services → Library</strong>, search for “Google Calendar API”, and click{' '}
+                <strong>Enable</strong>.
+              </li>
+              <li>
+                Open <strong>APIs &amp; Services → OAuth consent screen</strong>. Choose user type{' '}
+                <em>External</em>, fill in any app name plus your email, and save. Under Scopes / Data Access add{' '}
+                <span className="font-mono text-xs">https://www.googleapis.com/auth/calendar.events.readonly</span>{' '}
+                and <span className="font-mono text-xs">https://www.googleapis.com/auth/userinfo.email</span>.
+              </li>
+              <li>
+                On the same consent-screen page, set <strong>Publishing status → In production</strong>. Don’t skip
+                this: projects left in “Testing” expire their sign-in every 7 days. Since you are the only user of
+                your own project there is no Google review — the first sign-in shows an “unverified app” notice;
+                pick <em>Advanced → Go to &lt;your app name&gt;</em> to continue safely.
+              </li>
+              <li>
+                Now go to <strong>Credentials → Create Credentials → OAuth client ID</strong>. For application type
+                choose <strong>Desktop app</strong>, create it, and click <strong>Download JSON</strong>. (Desktop
+                app matters: it lets Meetily receive the sign-in on a local port without you configuring anything.)
+              </li>
+              <li>
+                Upload that JSON file here, then click “Connect Google Calendar” above. Your browser opens Google’s
+                consent page showing <em>your own project name</em>; approve once and Meetily stores the tokens
+                locally — no data leaves this machine afterwards.
+              </li>
+            </ol>
+            <p className="px-4 pb-4 -mt-1 text-xs text-gray-400">
+              Troubleshooting: an error about a “Web application client” means the wrong client type was created in
+              step 5 (it must be Desktop app). Being asked to sign in again every week means the project is still in
+              Testing mode (step 4).
+            </p>
+          </details>
+        </div>
+      )}
 
       {status.connected && (
         <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm space-y-4">
