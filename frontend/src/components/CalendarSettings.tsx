@@ -293,7 +293,7 @@ export function CalendarSettings() {
 
           <details className="group bg-gray-50 border border-gray-100 rounded-md">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 group-open:text-blue-700">
-              How to create your keys (free, ~5 minutes, one time)
+              How to create your Google Cloud API keys (updated for current Google Cloud Console)
             </summary>
             <ol className="list-decimal pl-8 pr-4 pb-4 mt-2 space-y-3 text-sm text-gray-600">
               <li>
