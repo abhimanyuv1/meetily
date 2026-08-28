@@ -119,17 +119,28 @@ pub async fn calendar_set_credentials(
 }
 
 /// Removes the stored client credentials. Only allowed while no account is
-/// connected: an account's refresh tokens only work with the client that made
-/// them, so clearing mid-connection would leave tokens unusable on refresh.
+/// actively connected: an account's refresh tokens only work with the client that
+/// made them, so clearing mid-connection would leave tokens unusable on refresh.
+/// If the account has expired tokens (status "needs_reauth"), clearing is allowed
+/// since the user will need to reconnect anyway, and the stale account is removed.
 #[tauri::command]
 pub async fn calendar_clear_credentials(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let pool = state.db_manager.pool();
-    if CalendarRepository::get_account(pool)
+    if let Some(acc) = CalendarRepository::get_account(pool)
         .await
         .map_err(|e| e.to_string())?
-        .is_some()
     {
-        return Err("Disconnect your Google account before removing its sign-in credentials".to_string());
+        // Only block if the account is actively connected (has valid tokens)
+        if acc.status == "connected" {
+            return Err("Disconnect your Google account before removing its sign-in credentials".to_string());
+        }
+        // If status is "needs_reauth" or other non-connected state, also disconnect
+        // the account since it has invalid/stale tokens. This gives a clean slate
+        // for the user to reconnect with fresh credentials if they wish.
+        CalendarRepository::disconnect(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        log::info!("Cleared stale account (status: {}) along with OAuth credentials", acc.status);
     }
     CalendarRepository::clear_oauth_client(pool)
         .await
