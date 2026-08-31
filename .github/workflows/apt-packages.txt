@@ -1,0 +1,17 @@
+# Key apt packages required for building Meetily
+# Changes to these packages should invalidate the apt cache
+libwebkit2gtk-4.1-dev
+libappindicator3-dev
+librsvg2-dev
+patchelf
+libasound2-dev
+libopenblas-dev
+libx11-dev
+libxtst-dev
+libxrandr-dev
+fuse
+libfuse2
+cuda-toolkit-12-4
+libnccl2
+libnccl-dev
+vulkan-sdk

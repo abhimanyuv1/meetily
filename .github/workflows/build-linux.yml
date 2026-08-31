@@ -247,6 +247,17 @@ jobs:
           echo "::error::cblas.h not found; is libopenblas-dev installed?"
           exit 1
 
+      # Cache apt packages to speed up installation of system dependencies
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: apt-${{ runner.os }}-${{ hashFiles('**/apt-packages.txt') }}-${{ github.event.inputs.ubuntu-version }}
+          restore-keys: |
+            apt-${{ runner.os }}-
+
       - name: Prepare Vulkan SDK (Ubuntu 24.04)
         if: github.event.inputs.ubuntu-version == 'ubuntu-24.04'
         run: |
@@ -255,6 +266,15 @@ jobs:
           sudo apt update
           sudo apt install vulkan-sdk -y
           sudo apt-get install -y mesa-vulkan-drivers
+
+      - name: Cache Vulkan SDK
+        if: matrix.backend == 'vulkan' && (github.event.inputs.ubuntu-version == 'ubuntu-24.04')
+        uses: actions/cache@v4
+        with:
+          path: /usr/lib/x86_64-vulkan
+          key: vulkan-sdk-1.3.290-noble-${{ hashFiles('.github/workflows/build-linux.yml') }}
+          restore-keys: |
+            vulkan-sdk-1.3.290-noble-
 
       - name: Prepare Vulkan SDK (Ubuntu 22.04)
         if: github.event.inputs.ubuntu-version == 'ubuntu-22.04' || github.event.inputs.ubuntu-version == ''
@@ -265,6 +285,15 @@ jobs:
           sudo apt install vulkan-sdk -y
           sudo apt-get install -y mesa-vulkan-drivers
 
+      - name: Cache Vulkan SDK (Ubuntu 22.04)
+        if: matrix.backend == 'vulkan' && (github.event.inputs.ubuntu-version == 'ubuntu-22.04' || github.event.inputs.ubuntu-version == '')
+        uses: actions/cache@v4
+        with:
+          path: /usr/lib/x86_64-vulkan
+          key: vulkan-sdk-1.3.290-jammy-${{ hashFiles('.github/workflows/build-linux.yml') }}
+          restore-keys: |
+            vulkan-sdk-1.3.290-jammy-
+
       # CUDA is only needed on the cuda leg. GitHub-hosted Linux runners have
       # no NVIDIA GPU, so this installs the toolkit (headers/nvcc/libs) to
       # compile against, but the resulting binary cannot be exercised on a
@@ -272,16 +301,35 @@ jobs:
       # Uses NVIDIA's official CUDA apt repo (12.x) rather than the outdated
       # `nvidia-cuda-toolkit` multiverse package (still on CUDA 11.5 as of
       # this writing), since ort/whisper-rs expect a modern CUDA toolchain.
+      
+      # Cache CUDA packages to speed up subsequent builds
+      - name: Cache CUDA Toolkit
+        if: matrix.backend == 'cuda'
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cuda-12.4
+            /etc/apt/sources.list.d/cuda*
+          key: cuda-toolkit-12.4-ubuntu-${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}
+          restore-keys: |
+            cuda-toolkit-12.4-ubuntu-
+      
       - name: Install CUDA Toolkit (cuda backend only)
         if: matrix.backend == 'cuda'
         shell: bash
         run: |
           UBUNTU_CODENAME=$(. /etc/os-release && echo "${VERSION_ID//./}")
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_CODENAME}/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          sudo apt-get update
-          sudo apt-get install -y cuda-toolkit-12-4 libnccl2 libnccl-dev
-          echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+          # Check if CUDA is already installed from cache
+          if [[ ! -d /usr/local/cuda-12.4 ]]; then
+            echo "Installing CUDA Toolkit..."
+            wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_CODENAME}/x86_64/cuda-keyring_1.1-1_all.deb
+            sudo dpkg -i cuda-keyring_1.1-1_all.deb
+            sudo apt-get update
+            sudo apt-get install -y cuda-toolkit-12-4 libnccl2 libnccl-dev
+            echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+          else
+            echo "CUDA Toolkit found in cache"
+          fi
           echo "CUDA_PATH=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
 
       # `meetily` links against libcuda.so.1 (the real NVIDIA driver library,
@@ -337,6 +385,18 @@ jobs:
       # writes an AppDir + squashfs image) can fail in ways that surface only
       # as the unhelpful generic "failed to run linuxdeploy" - this makes
       # that visible in the log before we get there.
+      # Cache linuxdeploy and appimagetool to speed up AppImage creation
+      - name: Cache linuxdeploy tools
+        if: contains(steps.build-profile.outputs.args, 'appimage')
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/linuxdeploy
+            ~/appimagetool
+          key: appimage-tools-${{ runner.os }}-${{ hashFiles('.github/workflows/build-linux.yml') }}
+          restore-keys: |
+            appimage-tools-${{ runner.os }}-
+
       - name: Report disk space before bundling
         run: df -h /
 
@@ -403,15 +463,23 @@ jobs:
               ls "$dir" | grep -E "(wayland|fuse)" || echo "  No wayland/fuse libraries found"
             done
 
-            # Get appimagetool
-            wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-            chmod +x appimagetool-x86_64.AppImage
+            # Get appimagetool (use cached version if available)
+            APPIMAGETOOL_PATH=~/appimagetool/appimagetool-x86_64.AppImage
+            if [[ ! -f "$APPIMAGETOOL_PATH" ]]; then
+              # Create cache directory and download
+              mkdir -p ~/appimagetool
+              wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O "$APPIMAGETOOL_PATH"
+              chmod +x "$APPIMAGETOOL_PATH"
+              echo "Downloaded appimagetool"
+            else
+              echo "Using cached appimagetool"
+            fi
 
             # Repackage AppImage with no-appstream to avoid warnings
-            ARCH=x86_64 ./appimagetool-x86_64.AppImage --no-appstream squashfs-root "$APPIMAGE_NAME"
+            ARCH=x86_64 "$APPIMAGETOOL_PATH" --no-appstream squashfs-root "$APPIMAGE_NAME"
 
-            # Clean up
-            rm -rf squashfs-root appimagetool-x86_64.AppImage
+            # Clean up extracted AppImage (keep appimagetool in cache)
+            rm -rf squashfs-root
 
             echo "libwayland-client.so removed from AppImage successfully"
           else
